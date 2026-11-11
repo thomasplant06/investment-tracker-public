@@ -1,7 +1,5 @@
 import pandas as pd, numpy as np, yfinance as yf
-from openpyxl import Workbook
-from openpyxl.chart import LineChart, Reference
-from openpyxl.styles import Font
+import xlsxwriter
 
 TICKER = "V40A.AS"        # Vanguard LifeStrategy 40% Acc, euro listing
 FX_TICKER = "EURGBP=X"    # pounds per 1 euro, from Yahoo Finance
@@ -53,90 +51,90 @@ pd.DataFrame({"fund_value_gbp": value_gbp, "cash_value_gbp": cash_gbp,
               "drawdown": drawdown}).to_csv("tracker.csv")
 
 # ---------- 3. Excel workbook with live formulas ----------
-wb = Workbook()
-bold, blue = Font(bold=True), Font(color="0000FF")   # blue = an input you can change
+# Each formula is written with its calculated value as well, so the numbers
+# show up in previews and viewers that do not calculate formulas themselves.
+wb = xlsxwriter.Workbook("tracker.xlsx")
+ws_s = wb.add_worksheet("Summary")
+ws_t = wb.add_worksheet("Trades")
+ws_p = wb.add_worksheet("Prices")
+bold = wb.add_format({"bold": True})
+fmt = lambda f, **kw: wb.add_format({"num_format": f, **kw})
 
 # Trades sheet: a copy of trades.csv
-ws_t = wb.active
-ws_t.title = "Trades"
-ws_t.append(list(trades.columns))
-for row in trades.itertuples(index=False):
-    ws_t.append(list(row))
+ws_t.write_row(0, 0, trades.columns, bold)
+for r, row in enumerate(trades.itertuples(index=False), start=1):
+    ws_t.write_row(r, 0, row)
+ws_t.set_column("A:F", 14)
 
-# Summary sheet: inputs at the top, results underneath
-ws_s = wb.create_sheet("Summary")
+# Summary sheet: inputs at the top (blue = you can change them), results underneath
 n = len(px) + 1                                      # last data row on Prices
 rows = [
-    ("INPUTS", None, None),
-    ("Cash rate (AER)", CASH_RATE, "0.00%"),
-    ("Cash benchmark (£)", GBP_CASH, "£#,##0.00"),
-    ("EUR per GBP at purchase", TRADE_EUR_PER_GBP, "0.0000"),
-    (None, None, None),
-    ("HOLDING", None, None),
-    ("Units held", "=SUM(Trades!C:C)", "0.0000"),
-    ("Cost (€, incl. fees)", "=SUM(Trades!F:F)", "€#,##0.00"),
-    ("Cost (£)", "=B8/B4", "£#,##0.00"),
-    ("Latest value (€)", f"=Prices!D{n}", "€#,##0.00"),
-    ("Latest value (£)", f"=Prices!E{n}", "£#,##0.00"),
-    (None, None, None),
-    ("PERFORMANCE", None, None),
-    ("Fund return in euros", "=B10/B8-1", "0.00%"),
-    ("Currency effect (EUR vs GBP)", f"=Prices!C{n}*B4-1", "0.00%"),
-    ("Total return in pounds", "=B11/B9-1", "0.00%"),
-    ("Cash benchmark return", f"=Prices!F{n}/B3-1", "0.00%"),
-    ("Fund minus cash", "=B16-B17", "0.00%"),
-    (None, None, None),
-    ("RISK", None, None),
-    ("Annualised volatility", f"=STDEV(Prices!G3:G{n})*SQRT(252)", "0.00%"),
-    ("Maximum drawdown", f"=MIN(Prices!H2:H{n})", "0.00%"),
+    ("INPUTS", None, None, None),
+    ("Cash rate (AER)", CASH_RATE, "0.00%", None),
+    ("Cash benchmark (£)", GBP_CASH, "£#,##0.00", None),
+    ("EUR per GBP at purchase", TRADE_EUR_PER_GBP, "0.0000", None),
+    (None, None, None, None),
+    ("HOLDING", None, None, None),
+    ("Units held", "=SUM(Trades!C:C)", "0.0000", units),
+    ("Cost (€, incl. fees)", "=SUM(Trades!F:F)", "€#,##0.00", cost_eur),
+    ("Cost (£)", "=B8/B4", "£#,##0.00", cost_gbp),
+    ("Latest value (€)", f"=Prices!D{n}", "€#,##0.00", value_eur.iloc[-1]),
+    ("Latest value (£)", f"=Prices!E{n}", "£#,##0.00", value_gbp.iloc[-1]),
+    (None, None, None, None),
+    ("PERFORMANCE", None, None, None),
+    ("Fund return in euros", "=B10/B8-1", "0.00%", fund_ret_eur),
+    ("Currency effect (EUR vs GBP)", f"=Prices!C{n}*B4-1", "0.00%", fx_ret),
+    ("Total return in pounds", "=B11/B9-1", "0.00%", total_ret_gbp),
+    ("Cash benchmark return", f"=Prices!F{n}/B3-1", "0.00%", cash_ret),
+    ("Fund minus cash", "=B16-B17", "0.00%", total_ret_gbp - cash_ret),
+    (None, None, None, None),
+    ("RISK", None, None, None),
+    ("Annualised volatility", f"=STDEV(Prices!G3:G{n})*SQRT(252)", "0.00%", daily_ret.std() * np.sqrt(252)),
+    ("Maximum drawdown", f"=MIN(Prices!H2:H{n})", "0.00%", drawdown.min()),
 ]
-for r, (label, val, fmt) in enumerate(rows, start=1):
-    ws_s.cell(r, 1, label)
+for r, (label, val, f, result) in enumerate(rows):
     if val is None:
-        ws_s.cell(r, 1).font = bold
+        ws_s.write(r, 0, label, bold)
+    elif result is None:
+        ws_s.write(r, 0, label)
+        ws_s.write(r, 1, val, fmt(f, font_color="#0000FF"))
     else:
-        c = ws_s.cell(r, 2, val)
-        c.number_format = fmt
-        if r <= 4:
-            c.font = blue
-ws_s.column_dimensions["A"].width = 30
-ws_s.column_dimensions["B"].width = 14
+        ws_s.write(r, 0, label)
+        ws_s.write_formula(r, 1, val, fmt(f), float(result))
+ws_s.set_column("A:A", 30)
+ws_s.set_column("B:B", 14)
 
 # Prices sheet: downloaded data in A-C, formulas in D-J
-ws_p = wb.create_sheet("Prices")
-ws_p.append(["Date", "Price (€)", "GBP per EUR", "Value (€)", "Value (£)", "Cash (£)",
-             "Daily return", "Drawdown", "Fund index", "Cash index"])
-for i, (d, p, f) in enumerate(zip(px.index, px, fx), start=2):
-    ws_p.append([
-        d.date(), round(float(p), 4), round(float(f), 6),
-        f"=B{i}*Summary!$B$7",
-        f"=D{i}*C{i}",
-        f"=Summary!$B$3*(1+Summary!$B$2)^((A{i}-$A$2)/365)",
-        f"=E{i}/E{i-1}-1" if i > 2 else None,
-        f"=E{i}/MAX($E$2:E{i})-1",
-        f"=E{i}/Summary!$B$9*100",
-        f"=F{i}/Summary!$B$3*100",
-    ])
-    ws_p.cell(i, 1).number_format = "dd/mm/yyyy"
-    for col in (7, 8):
-        ws_p.cell(i, col).number_format = "0.00%"
-    for col in (4, 5, 6, 9, 10):
-        ws_p.cell(i, col).number_format = "#,##0.00"
-for cell in ws_p[1] + ws_t[1]:
-    cell.font = bold
-for col in "ABCDEFGHIJ":
-    ws_p.column_dimensions[col].width = 13
+ws_p.write_row(0, 0, ["Date", "Price (€)", "GBP per EUR", "Value (€)", "Value (£)", "Cash (£)",
+                      "Daily return", "Drawdown", "Fund index", "Cash index"], bold)
+date_f, num_f, pct_f = fmt("dd/mm/yyyy"), fmt("#,##0.00"), fmt("0.00%")
+for k in range(len(px)):
+    i = k + 2                                        # Excel row number
+    ws_p.write_datetime(k + 1, 0, px.index[k].to_pydatetime(), date_f)
+    ws_p.write(k + 1, 1, round(float(px.iloc[k]), 4))
+    ws_p.write(k + 1, 2, round(float(fx.iloc[k]), 6))
+    ws_p.write_formula(k + 1, 3, f"=B{i}*Summary!$B$7", num_f, float(value_eur.iloc[k]))
+    ws_p.write_formula(k + 1, 4, f"=D{i}*C{i}", num_f, float(value_gbp.iloc[k]))
+    ws_p.write_formula(k + 1, 5, f"=Summary!$B$3*(1+Summary!$B$2)^((A{i}-$A$2)/365)", num_f, float(cash_gbp.iloc[k]))
+    if k > 0:
+        ws_p.write_formula(k + 1, 6, f"=E{i}/E{i-1}-1", pct_f, float(daily_ret.iloc[k - 1]))
+    ws_p.write_formula(k + 1, 7, f"=E{i}/MAX($E$2:E{i})-1", pct_f, float(drawdown.iloc[k]))
+    ws_p.write_formula(k + 1, 8, f"=E{i}/Summary!$B$9*100", num_f, float(value_gbp.iloc[k] / cost_gbp * 100))
+    ws_p.write_formula(k + 1, 9, f"=F{i}/Summary!$B$3*100", num_f, float(cash_gbp.iloc[k] / GBP_CASH * 100))
+ws_p.set_column("A:J", 13)
 
 # Chart: fund vs cash, both starting at 100 so they are comparable
-chart = LineChart()
-chart.title = "Fund vs cash (100 = amount invested)"
-chart.y_axis.title = "Index"
-chart.height, chart.width = 9, 18
-chart.add_data(Reference(ws_p, min_col=9, max_col=10, min_row=1, max_row=n), titles_from_data=True)
-chart.set_categories(Reference(ws_p, min_col=1, min_row=2, max_row=n))
-chart.y_axis.scaling.min = 90
-ws_s.add_chart(chart, "D2")
+chart = wb.add_chart({"type": "line"})
+for col, name in ((8, "Fund index"), (9, "Cash index")):
+    chart.add_series({"name": name,
+                      "categories": ["Prices", 1, 0, n - 1, 0],
+                      "values": ["Prices", 1, col, n - 1, col]})
+chart.set_title({"name": "Fund vs cash (100 = amount invested)"})
+chart.set_y_axis({"name": "Index", "min": 90})
+chart.set_x_axis({"date_axis": True, "num_format": "dd mmm"})
+chart.set_legend({"position": "bottom"})
+chart.set_size({"width": 620, "height": 340})
+ws_s.insert_chart("D2", chart)
 
-wb.move_sheet("Summary", offset=-1)                  # put Summary first
-wb.save("tracker.xlsx")
+wb.close()
 print("\nSaved tracker.csv and tracker.xlsx")
